@@ -3,11 +3,11 @@ import os
 from TTS.api import TTS
 
 # Создаем экземпляр бота с токеном
-bot_token = "YOUR_BOT_TOKEN"
+bot_token = "8060928204:AAGTqyGeZnKnJLHNbm2CV5qir1eqJ8XJfQM"
 bot = telebot.TeleBot(bot_token)
 
 # Инициализация модели для мужского голоса
-tts_model = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC", progress_bar=False, gpu=False)
+tts_model = TTS(model_name="tts_models/ru/ljspeech/tacotron2-DDC", progress_bar=False, gpu=False)
 
 # Функция для генерации голосового сообщения
 def generate_voice(text, filename="voice_output.wav"):
