@@ -1,47 +1,39 @@
-from flask import Flask, render_template, request, jsonify
-from flask_sqlalchemy import SQLAlchemy
-from flask_migrate import Migrate
-from flask_cors import CORS
+import telebot
 import os
+from TTS.api import TTS
 
-app = Flask(__name__)
-CORS(app)
+# Создаем экземпляр бота с токеном
+bot_token = "YOUR_BOT_TOKEN"
+bot = telebot.TeleBot(bot_token)
 
-# Конфигурация базы данных
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///site.db'
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-db = SQLAlchemy(app)
-migrate = Migrate(app, db)
+# Инициализация модели для мужского голоса
+tts_model = TTS(model_name="tts_models/en/ljspeech/tacotron2-DDC", progress_bar=False, gpu=False)
 
-# Модель пользователя
-class User(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    username = db.Column(db.String(80), unique=True, nullable=False)
-    email = db.Column(db.String(120), unique=True, nullable=False)
+# Функция для генерации голосового сообщения
+def generate_voice(text, filename="voice_output.wav"):
+    tts_model.tts_to_file(text=text, speaker=tts_model.speakers[0], language=tts_model.languages[0], file_path=filename)
 
-    def __repr__(self):
-        return f'<User {self.username}>'
+# Команда /start
+@bot.message_handler(commands=['start'])
+def send_welcome(message):
+    bot.reply_to(message, "Привет! Отправь мне текст, и я озвучу его мужским голосом!")
 
-@app.route('/')
-def hello():
-    return 'Hello, World!'
+# Обработчик текстовых сообщений
+@bot.message_handler(func=lambda message: True)
+def text_to_speech(message):
+    user_text = message.text
 
-@app.route('/users', methods=['GET'])
-def get_users():
-    users = User.query.all()
-    return jsonify([{'id': user.id, 'username': user.username, 'email': user.email} for user in users])
+    # Генерация голосового файла
+    voice_file = "voice_output.wav"
+    generate_voice(user_text, voice_file)
 
-@app.route('/users', methods=['POST'])
-def create_user():
-    data = request.json
-    new_user = User(username=data['username'], email=data['email'])
-    db.session.add(new_user)
-    db.session.commit()
-    return jsonify({'message': 'User created successfully'}), 201
+    # Отправка голосового файла пользователю
+    with open(voice_file, 'rb') as audio:
+        bot.send_voice(message.chat.id, audio)
 
-@app.route('/about')
-def about():
-    return render_template('about.html')
+    # Удаление временного файла после отправки
+    os.remove(voice_file)
 
-if __name__ == '__main__':
-    app.run(debug=True)
+# Запуск бота
+if __name__ == "__main__":
+    bot.polling(none_stop=True)
