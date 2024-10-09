@@ -1,107 +1,172 @@
 import os
 import sys
 import socket
-import requests
-from flask import Flask, request, send_file
+from flask import Flask, render_template_string, request, send_file, jsonify
 from pytube import YouTube
 from moviepy.editor import AudioFileClip
+import requests
+import tempfile
 
 app = Flask(__name__)
-user_state = {}
 
-@app.route("/", methods=["GET", "POST"])
+@app.route("/")
 def index():
-    if request.method == "POST":
-        link = request.form["link"]
-        if 'youtube.com/watch' in link or 'youtu.be/' in link:
-            try:
-                yt = YouTube(link)
-                video_title = yt.title
-                thumbnail_url = yt.thumbnail_url
-                resolutions = ['144p', '240p', '360p', '480p', '540p', '720p', '720p60', '1080p', '1080p60']
+    version = sys.version_info
+    env = os.getenv('ENV', 'Development')
+    hostname = socket.gethostname()
+    
+    html = '''
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>YouTube Downloader</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <style>
+            .neumorphic {
+                background: #e0e0e0;
+                box-shadow: 20px 20px 60px #bebebe, -20px -20px 60px #ffffff;
+            }
+            .dark .neumorphic {
+                background: #2d3748;
+                box-shadow: 20px 20px 60px #1a202c, -20px -20px 60px #4a5568;
+            }
+        </style>
+    </head>
+    <body class="bg-gray-100 dark:bg-gray-800 transition-colors duration-300">
+        <div class="container mx-auto px-4 py-8">
+            <div class="neumorphic rounded-lg p-8 mb-8">
+                <h1 class="text-3xl font-bold mb-4 text-gray-800 dark:text-white">YouTube Downloader</h1>
+                <h2 class="text-xl mb-2 text-gray-700 dark:text-gray-300">Environment: {{ env }}</h2>
+                <p class="text-gray-600 dark:text-gray-400">Running Python: {{ python_version }}</p>
+                <p class="text-gray-600 dark:text-gray-400">Hostname: {{ hostname }}</p>
+            </div>
+            
+            <div class="neumorphic rounded-lg p-8">
+                <form id="downloadForm" class="mb-4">
+                    <input type="text" id="youtubeUrl" placeholder="Enter YouTube URL" class="w-full p-2 mb-4 rounded bg-white dark:bg-gray-700 text-gray-800 dark:text-white">
+                    <button type="submit" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded">
+                        Get Download Options
+                    </button>
+                </form>
                 
-                streams = []
-                for res in resolutions:
-                    stream = yt.streams.filter(res=res.replace('60', ''), fps=60 if '60' в res else None, file_extension='mp4').first()
-                    if stream:
-                        size = round(stream.filesize / (1024 * 1024), 2)
-                        streams.append(f'<li><a href="/download/{stream.itag}">{res} MP4 ({size} MB)</a></li>')
+                <div id="videoInfo" class="hidden mb-4">
+                    <img id="thumbnail" src="" alt="Video Thumbnail" class="w-full h-48 object-cover mb-2 rounded">
+                    <h3 id="videoTitle" class="text-xl font-bold mb-2 text-gray-800 dark:text-white"></h3>
+                </div>
                 
-                audio_stream = yt.streams.filter(only_audio=True).first()
-                if audio_stream:
-                    audio_size = round(audio_stream.filesize / (1024 * 1024), 2)
-                    streams.append(f'<li><a href="/download_audio/{audio_stream.itag}">320kbps .mp3 ({audio_size} MB)</a></li>')
+                <div id="downloadOptions" class="hidden">
+                    <h4 class="text-lg font-bold mb-2 text-gray-800 dark:text-white">Download Options:</h4>
+                    <div id="optionsList"></div>
+                </div>
+            </div>
+        </div>
+        
+        <script>
+        document.getElementById('downloadForm').addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const url = document.getElementById('youtubeUrl').value;
+            const response = await fetch('/get_video_info', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({url: url})
+            });
+            const data = await response.json();
+            
+            document.getElementById('thumbnail').src = data.thumbnail_url;
+            document.getElementById('videoTitle').textContent = data.title;
+            document.getElementById('videoInfo').classList.remove('hidden');
+            
+            const optionsList = document.getElementById('optionsList');
+            optionsList.innerHTML = '';
+            data.streams.forEach(stream => {
+                const button = document.createElement('button');
+                button.textContent = `${stream.resolution} (${stream.file_size} MB)`;
+                button.className = 'bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded mr-2 mb-2';
+                button.onclick = () => downloadVideo(url, stream.itag, stream.is_audio);
+                optionsList.appendChild(button);
+            });
+            document.getElementById('downloadOptions').classList.remove('hidden');
+        });
 
-                user_state[request.remote_addr] = {
-                    'link': link,
-                    'title': video_title,
-                    'thumbnail_url': thumbnail_url,
-                }
+        async function downloadVideo(url, itag, isAudio) {
+            const response = await fetch('/download', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({url: url, itag: itag, is_audio: isAudio})
+            });
+            const blob = await response.blob();
+            const downloadUrl = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = downloadUrl;
+            a.download = isAudio ? 'audio.mp3' : 'video.mp4';
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(downloadUrl);
+        }
+        </script>
+    </body>
+    </html>
+    '''
+    
+    return render_template_string(html, env=env, python_version=f"{version.major}.{version.minor}.{version.micro}", hostname=hostname)
 
-                return f"""
-                    <html>
-                    <head>
-                        <title>Выбор разрешения</title>
-                    </head>
-                    <body>
-                        <h1>Выберите разрешение для скачивания: {video_title}</h1>
-                        <ul>
-                            {''.join(streams)}
-                        </ul>
-                    </body>
-                    </html>
-                """
+@app.route("/get_video_info", methods=['POST'])
+def get_video_info():
+    url = request.json['url']
+    try:
+        yt = YouTube(url)
+        streams = []
+        for stream in yt.streams.filter(progressive=True):
+            streams.append({
+                'itag': stream.itag,
+                'resolution': stream.resolution,
+                'file_size': round(stream.filesize / (1024 * 1024), 2),
+                'is_audio': False
+            })
+        
+        audio_stream = yt.streams.filter(only_audio=True).first()
+        if audio_stream:
+            streams.append({
+                'itag': audio_stream.itag,
+                'resolution': '320kbps MP3',
+                'file_size': round(audio_stream.filesize / (1024 * 1024), 2),
+                'is_audio': True
+            })
+        
+        return jsonify({
+            'title': yt.title,
+            'thumbnail_url': yt.thumbnail_url,
+            'streams': streams
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
 
-            except Exception as e:
-                return f"Ошибка при обработке видео. Проверьте ссылку и попробуйте снова. Ошибка: {str(e)}"
+@app.route("/download", methods=['POST'])
+def download():
+    url = request.json['url']
+    itag = request.json['itag']
+    is_audio = request.json['is_audio']
     
-    return """
-        <html>
-        <head>
-            <title>Скачиватель YouTube</title>
-        </head>
-        <body>
-            <h1>Привет! Отправьте ссылку на видео с YouTube для скачивания.</h1>
-            <form method="post">
-                <input type="text" name="link" placeholder="Ссылка на YouTube" required>
-                <button type="submit">Скачать</button>
-            </form>
-        </body>
-        </html>
-    """
-
-@app.route("/download/<itag>")
-def download(itag):
-    user_data = user_state.get(request.remote_addr)
-    if not user_data or 'link' not in user_data:
-        return "Ошибка состояния. Попробуйте снова."
-    
-    link = user_data['link']
-    yt = YouTube(link)
-    stream = yt.streams.get_by_itag(itag)
-    filename = stream.default_filename
-    stream.download(filename=filename)
-    
-    return send_file(filename, as_attachment=True, download_name=filename)
-
-@app.route("/download_audio/<itag>")
-def download_audio(itag):
-    user_data = user_state.get(request.remote_addr)
-    if not user_data or 'link' not in user_data:
-        return "Ошибка состояния. Попробуйте снова."
-    
-    link = user_data['link']
-    yt = YouTube(link)
-    stream = yt.streams.get_by_itag(itag)
-    filename = stream.default_filename
-    stream.download(filename=filename)
-    
-    audio_filename = filename.replace('.mp4', '.mp3')
-    audio = AudioFileClip(filename)
-    audio.write_audiofile(audio_filename, codec='libmp3lame', bitrate='320k')
-    
-    os.remove(filename)  # Удаляем видеофайл после конвертации
-    return send_file(audio_filename, as_attachment=True, download_name=audio_filename)
+    try:
+        yt = YouTube(url)
+        stream = yt.streams.get_by_itag(itag)
+        
+        with tempfile.NamedTemporaryFile(delete=False) as temp_file:
+            stream.download(filename=temp_file.name)
+            
+            if is_audio:
+                audio = AudioFileClip(temp_file.name)
+                audio_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
+                audio.write_audiofile(audio_file.name, codec='libmp3lame', bitrate='320k')
+                os.unlink(temp_file.name)
+                return send_file(audio_file.name, as_attachment=True, download_name=f"{yt.title}.mp3")
+            else:
+                return send_file(temp_file.name, as_attachment=True, download_name=f"{yt.title}.mp4")
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
