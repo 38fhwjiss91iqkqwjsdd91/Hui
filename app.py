@@ -1,249 +1,177 @@
 import os
 import sys
 import socket
-from flask import Flask, render_template_string, request, send_file
+from flask import Flask, render_template_string, request, send_file, jsonify
 from pytube import YouTube
 from moviepy.editor import AudioFileClip
 import requests
-import io
+import tempfile
 
 app = Flask(__name__)
 
-@app.route("/", methods=['GET', 'POST'])
+@app.route("/")
 def index():
     version = sys.version_info
     env = os.getenv('ENV', 'Development')
     hostname = socket.gethostname()
+    
+    html = '''
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>YouTube Downloader</title>
+        <script src="https://cdn.tailwindcss.com"></script>
+        <script src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/2.3.0/alpine-ie11.min.js"></script>
+        <style>
+            .neumorphic {
+                background: #e0e0e0;
+                box-shadow: 20px 20px 60px #bebebe, -20px -20px 60px #ffffff;
+            }
+            .dark .neumorphic {
+                background: #2d3748;
+                box-shadow: 20px 20px 60px #1a202c, -20px -20px 60px #4a5568;
+            }
+        </style>
+    </head>
+    <body class="bg-gray-100 dark:bg-gray-800 transition-colors duration-300" x-data="{ darkMode: false }">
+        <div class="container mx-auto px-4 py-8">
+            <div class="neumorphic rounded-lg p-8 mb-8">
+                <h1 class="text-4xl font-bold mb-4 text-gray-800 dark:text-white">YouTube Downloader</h1>
+                <p class="text-gray-600 dark:text-gray-300 mb-4">Enter a YouTube URL to download video or audio</p>
+                <div class="mb-4">
+                    <input type="text" id="youtube-url" placeholder="https://www.youtube.com/watch?v=..." 
+                           class="w-full p-2 rounded border border-gray-300 dark:border-gray-600 dark:bg-gray-700 dark:text-white">
+                </div>
+                <button onclick="getVideoInfo()" 
+                        class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded transition duration-300">
+                    Get Video Info
+                </button>
+            </div>
 
-    if request.method == 'POST':
-        link = request.form.get('youtube_link')
-        if 'youtube.com/watch' in link or 'youtu.be/' in link:
-            try:
-                yt = YouTube(link)
-                video_title = yt.title
-                thumbnail_url = yt.thumbnail_url
-                resolutions = ['144p', '240p', '360p', '480p', '540p', '720p', '720p60', '920p', '1080p', '1080p60']
-                download_options = []
+            <div id="video-info" class="neumorphic rounded-lg p-8 mb-8 hidden">
+                <img id="thumbnail" src="" alt="Video Thumbnail" class="w-full mb-4 rounded">
+                <h2 id="video-title" class="text-2xl font-bold mb-4 text-gray-800 dark:text-white"></h2>
+                <div id="download-options"></div>
+            </div>
 
-                for res in resolutions:
-                    stream = yt.streams.filter(res=res.replace('60', ''), fps=60 if '60' in res else None, file_extension='mp4').first()
-                    if stream:
-                        size = round(stream.filesize / (1024 * 1024), 2)
-                        download_options.append({
-                            'resolution': res,
-                            'size': size,
-                            'itag': stream.itag
-                        })
+            <div class="neumorphic rounded-lg p-8">
+                <h2 class="text-2xl font-bold mb-4 text-gray-800 dark:text-white">Server Info</h2>
+                <p class="text-gray-600 dark:text-gray-300">Environment: {{ env }}</p>
+                <p class="text-gray-600 dark:text-gray-300">Python Version: {{ version.major }}.{{ version.minor }}.{{ version.micro }}</p>
+                <p class="text-gray-600 dark:text-gray-300">Hostname: {{ hostname }}</p>
+            </div>
+        </div>
 
-                audio_stream = yt.streams.filter(only_audio=True).first()
-                if audio_stream:
-                    audio_size = round(audio_stream.filesize / (1024 * 1024), 2)
-                    download_options.append({
-                        'resolution': 'Audio (320kbps MP3)',
-                        'size': audio_size,
-                        'itag': audio_stream.itag
+        <button @click="darkMode = !darkMode" 
+                class="fixed bottom-4 right-4 bg-gray-200 dark:bg-gray-600 p-2 rounded-full shadow-lg">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" 
+                      d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+            </svg>
+        </button>
+
+        <script>
+            function getVideoInfo() {
+                const url = document.getElementById('youtube-url').value;
+                fetch(`/video_info?url=${encodeURIComponent(url)}`)
+                    .then(response => response.json())
+                    .then(data => {
+                        document.getElementById('video-info').classList.remove('hidden');
+                        document.getElementById('thumbnail').src = data.thumbnail_url;
+                        document.getElementById('video-title').textContent = data.title;
+                        const downloadOptions = document.getElementById('download-options');
+                        downloadOptions.innerHTML = '';
+                        data.streams.forEach(stream => {
+                            const button = document.createElement('button');
+                            button.textContent = `${stream.resolution} (${stream.filesize} MB)`;
+                            button.className = 'bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded m-2 transition duration-300';
+                            button.onclick = () => downloadVideo(url, stream.itag);
+                            downloadOptions.appendChild(button);
+                        });
+                        if (data.audio_stream) {
+                            const audioButton = document.createElement('button');
+                            audioButton.textContent = `Audio MP3 (${data.audio_stream.filesize} MB)`;
+                            audioButton.className = 'bg-purple-500 hover:bg-purple-600 text-white font-bold py-2 px-4 rounded m-2 transition duration-300';
+                            audioButton.onclick = () => downloadAudio(url, data.audio_stream.itag);
+                            downloadOptions.appendChild(audioButton);
+                        }
                     })
+                    .catch(error => console.error('Error:', error));
+            }
 
-                return render_template_string(HTML_TEMPLATE, 
-                    version=f"{version.major}.{version.minor}.{version.micro}",
-                    env=env,
-                    hostname=hostname,
-                    video_title=video_title,
-                    thumbnail_url=thumbnail_url,
-                    download_options=download_options
-                )
-            except Exception as e:
-                error_message = f"Error processing video. Please check the link and try again. Error: {str(e)}"
-                return render_template_string(HTML_TEMPLATE, 
-                    version=f"{version.major}.{version.minor}.{version.micro}",
-                    env=env,
-                    hostname=hostname,
-                    error_message=error_message
-                )
-        else:
-            error_message = "Invalid YouTube link. Please enter a valid YouTube video URL."
-            return render_template_string(HTML_TEMPLATE, 
-                version=f"{version.major}.{version.minor}.{version.micro}",
-                env=env,
-                hostname=hostname,
-                error_message=error_message
-            )
+            function downloadVideo(url, itag) {
+                window.location.href = `/download_video?url=${encodeURIComponent(url)}&itag=${itag}`;
+            }
 
-    return render_template_string(HTML_TEMPLATE, 
-        version=f"{version.major}.{version.minor}.{version.micro}",
-        env=env,
-        hostname=hostname
-    )
+            function downloadAudio(url, itag) {
+                window.location.href = `/download_audio?url=${encodeURIComponent(url)}&itag=${itag}`;
+            }
+        </script>
+    </body>
+    </html>
+    '''
+    return render_template_string(html, version=version, env=env, hostname=hostname)
 
-@app.route("/download", methods=['POST'])
-def download():
-    link = request.form.get('link')
-    itag = request.form.get('itag')
-    is_audio = request.form.get('is_audio') == 'true'
-
+@app.route("/video_info")
+def video_info():
+    url = request.args.get('url')
     try:
-        yt = YouTube(link)
-        stream = yt.streams.get_by_itag(itag)
-        
-        if is_audio:
-            buffer = io.BytesIO()
-            stream.stream_to_buffer(buffer)
-            buffer.seek(0)
-            
-            audio = AudioFileClip(buffer)
-            audio_buffer = io.BytesIO()
-            audio.write_audiofile(audio_buffer, codec='libmp3lame', bitrate='320k')
-            audio_buffer.seek(0)
-            
-            return send_file(
-                audio_buffer,
-                as_attachment=True,
-                download_name=f"{yt.title}.mp3",
-                mimetype="audio/mpeg"
-            )
-        else:
-            buffer = io.BytesIO()
-            stream.stream_to_buffer(buffer)
-            buffer.seek(0)
-            
-            return send_file(
-                buffer,
-                as_attachment=True,
-                download_name=stream.default_filename,
-                mimetype="video/mp4"
-            )
+        yt = YouTube(url)
+        streams = yt.streams.filter(progressive=True, file_extension='mp4')
+        stream_data = [
+            {
+                'itag': stream.itag,
+                'resolution': stream.resolution,
+                'filesize': round(stream.filesize / (1024 * 1024), 2)
+            }
+            for stream in streams
+        ]
+        audio_stream = yt.streams.filter(only_audio=True).first()
+        audio_data = None
+        if audio_stream:
+            audio_data = {
+                'itag': audio_stream.itag,
+                'filesize': round(audio_stream.filesize / (1024 * 1024), 2)
+            }
+        return jsonify({
+            'title': yt.title,
+            'thumbnail_url': yt.thumbnail_url,
+            'streams': stream_data,
+            'audio_stream': audio_data
+        })
     except Exception as e:
-        return f"Error downloading: {str(e)}", 400
+        return jsonify({'error': str(e)}), 400
 
-HTML_TEMPLATE = """
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YouTube Downloader</title>
-    <style>
-        body {
-            font-family: Arial, sans-serif;
-            line-height: 1.6;
-            color: #333;
-            max-width: 800px;
-            margin: 0 auto;
-            padding: 20px;
-            background-color: #f4f4f4;
-        }
-        h1 {
-            color: #e74c3c;
-        }
-        form {
-            background-color: #fff;
-            padding: 20px;
-            border-radius: 5px;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-        }
-        input[type="text"] {
-            width: 100%;
-            padding: 10px;
-            margin-bottom: 10px;
-            border: 1px solid #ddd;
-            border-radius: 3px;
-        }
-        input[type="submit"] {
-            background-color: #e74c3c;
-            color: #fff;
-            border: none;
-            padding: 10px 20px;
-            cursor: pointer;
-            border-radius: 3px;
-        }
-        input[type="submit"]:hover {
-            background-color: #c0392b;
-        }
-        .error {
-            color: #e74c3c;
-            font-weight: bold;
-        }
-        .video-info {
-            background-color: #fff;
-            padding: 20px;
-            border-radius: 5px;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
-            margin-top: 20px;
-        }
-        .video-info img {
-            max-width: 100%;
-            height: auto;
-            margin-bottom: 10px;
-        }
-        .download-options {
-            list-style-type: none;
-            padding: 0;
-        }
-        .download-options li {
-            margin-bottom: 10px;
-        }
-        .download-button {
-            background-color: #3498db;
-            color: #fff;
-            border: none;
-            padding: 5px 10px;
-            cursor: pointer;
-            border-radius: 3px;
-            text-decoration: none;
-            display: inline-block;
-        }
-        .download-button:hover {
-            background-color: #2980b9;
-        }
-        .footer {
-            margin-top: 20px;
-            text-align: center;
-            font-size: 0.9em;
-            color: #777;
-        }
-    </style>
-</head>
-<body>
-    <h1>YouTube Downloader</h1>
-    <form method="post">
-        <input type="text" name="youtube_link" placeholder="Enter YouTube video URL" required>
-        <input type="submit" value="Get Download Options">
-    </form>
-    
-    {% if error_message %}
-    <p class="error">{{ error_message }}</p>
-    {% endif %}
-    
-    {% if video_title %}
-    <div class="video-info">
-        <h2>{{ video_title }}</h2>
-        <img src="{{ thumbnail_url }}" alt="Video Thumbnail">
-        <h3>Download Options:</h3>
-        <ul class="download-options">
-            {% for option in download_options %}
-            <li>
-                <form action="/download" method="post">
-                    <input type="hidden" name="link" value="{{ request.form.youtube_link }}">
-                    <input type="hidden" name="itag" value="{{ option.itag }}">
-                    <input type="hidden" name="is_audio" value="{{ 'true' if option.resolution == 'Audio (320kbps MP3)' else 'false' }}">
-                    <button type="submit" class="download-button">
-                        Download {{ option.resolution }} ({{ option.size }} MB)
-                    </button>
-                </form>
-            </li>
-            {% endfor %}
-        </ul>
-    </div>
-    {% endif %}
-    
-    <div class="footer">
-        <p>Running Python: {{ version }}</p>
-        <p>Environment: {{ env }}</p>
-        <p>Hostname: {{ hostname }}</p>
-    </div>
-</body>
-</html>
-"""
+@app.route("/download_video")
+def download_video():
+    url = request.args.get('url')
+    itag = request.args.get('itag')
+    try:
+        yt = YouTube(url)
+        stream = yt.streams.get_by_itag(itag)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
+            stream.download(filename=tmp_file.name)
+            return send_file(tmp_file.name, as_attachment=True, download_name=f"{yt.title}.mp4")
+    except Exception as e:
+        return str(e), 400
+
+@app.route("/download_audio")
+def download_audio():
+    url = request.args.get('url')
+    itag = request.args.get('itag')
+    try:
+        yt = YouTube(url)
+        stream = yt.streams.get_by_itag(itag)
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.mp4') as tmp_file:
+            stream.download(filename=tmp_file.name)
+            audio = AudioFileClip(tmp_file.name)
+            mp3_file = tempfile.NamedTemporaryFile(delete=False, suffix='.mp3')
+            audio.write_audiofile(mp3_file.name, codec='libmp3lame', bitrate='320k')
+            return send_file(mp3_file.name, as_attachment=True, download_name=f"{yt.title}.mp3")
+    except Exception as e:
+        return str(e), 400
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=80)
